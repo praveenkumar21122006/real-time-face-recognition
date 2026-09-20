@@ -13,18 +13,21 @@ h1{margin:0;font-size:18px;letter-spacing:.5px}
 .grid{display:grid;grid-template-columns:1.6fr .9fr;gap:16px;padding:16px}
 .card{background:#151a1e;border:1px solid #232a30;border-radius:14px;padding:14px}
 .card h2{margin:0 0 10px;font-size:14px;color:#9fb0be;letter-spacing:.6px;text-transform:uppercase}
-#feed{width:100%;height:420px;object-fit:cover;background:#000;border-radius:10px;border:1px solid #232a30}
+#feed,#browserVideo{width:100%;height:420px;object-fit:cover;background:#000;border-radius:10px;border:1px solid #232a30}
+#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.wrap{position:relative}
 .row{display:flex;gap:8px;flex-wrap:wrap}
 select,input,button{padding:9px 11px;border-radius:8px;border:1px solid #2a343d;background:#0f1215;color:#e8eef2}
 button{cursor:pointer;background:#1a73e8;border-color:#1a73e8;font-weight:600}
 button:disabled{opacity:.5}
+button.secondary{background:#232a30;border-color:#2a343d}
+button.success{background:#1a7a3a;border-color:#1a7a3a}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:8px 6px;border-bottom:1px solid #232a30;text-align:left}
 th{color:#9fb0be}
 .granted{color:#3dd68c} .denied{color:#ff5a5a}
-.thumb{width:28px;height:28px;border-radius:50%;object-fit:cover;background:#222}
 .log{max-height:420px;overflow:auto}
-@media(max-width:900px){.grid{grid-template-columns:1fr} #feed{height:300px}}
+@media(max-width:900px){.grid{grid-template-columns:1fr} #feed,#browserVideo{height:300px}}
 </style>
 </head>
 <body>
@@ -38,14 +41,24 @@ th{color:#9fb0be}
 
 <div class="grid">
   <div class="card">
-    <h2>Live Camera — <span id="entLabel">main_entrance</span> <span style="color:#6b7c8d;font-weight:400" id="fps"></span></h2>
-    <img id="feed" alt="video feed"/>
-    <div class="row" style="margin-top:10px">
-      <input type="file" id="snap" accept="image/*"/>
-      <button onclick="testSnap()">Test Recognize Snapshot</button>
-      <button onclick="reloadFeed()" style="background:#232a30;border-color:#2a343d">Reload Feed</button>
+    <h2>Live Camera — <span id="entLabel">main_entrance</span> <span style="color:#6b7c8d;font-weight:400" id="fps"></span> <span id="modeLabel" style="color:#3dd68c"></span></h2>
+    <div class="wrap">
+      <img id="feed" alt="server feed" style="display:block"/>
+      <video id="browserVideo" autoplay playsinline muted style="display:none"></video>
+      <canvas id="overlay" width="640" height="420"></canvas>
     </div>
-    <p style="color:#9fb0be;font-size:12px;margin:8px 0 0">Green = granted, Red = unknown. Auto-logs with 5s cooldown per person. Tolerance configurable in <code>config.py</code>.</p>
+    <div id="status" style="margin-top:8px;font-size:13px;color:#9fb0be"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnBrowser" onclick="startBrowserCamera()" class="success">📷 Use Browser Camera</button>
+      <button id="btnServer" onclick="startServerFeed()" class="secondary">🖥️ Use Server Feed</button>
+      <button onclick="stopAll()" class="secondary">⏹ Stop</button>
+      <button onclick="reloadFeed()" class="secondary">Reload</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="file" id="snap" accept="image/*"/>
+      <button onclick="testSnap()" class="secondary">Test Snapshot</button>
+    </div>
+    <p style="color:#9fb0be;font-size:12px;margin:8px 0 0">Browser camera: direct WebRTC → sends frame to <code>/api/recognize</code> every 700ms. Green=granted, Red=unknown. Server feed: MJPEG from <code>config.CAMERA_SOURCES</code> (needs server webcam/RTSP).</p>
   </div>
 
   <div class="card">
@@ -55,7 +68,8 @@ th{color:#9fb0be}
     <input id="srole" placeholder="Role (staff/admin/security)" value="staff" style="width:100%;margin-bottom:8px"/>
     <input type="file" id="faces" accept="image/*" multiple style="width:100%;margin-bottom:8px"/>
     <button onclick="enroll()" style="width:100%">Enroll (1-5 photos)</button>
-    <p style="color:#9fb0be;font-size:12px">Upload 2-3 frontal photos for best accuracy. Enrolled instantly searchable.</p>
+    <p style="color:#9fb0be;font-size:12px">Upload 2-3 frontal photos. Or capture from browser camera then enroll.</p>
+    <button onclick="captureEnroll()" class="secondary" style="width:100%;margin-bottom:8px">📸 Capture from Browser Camera</button>
     <table id="staffTbl"><thead><tr><th>ID</th><th>Name</th><th>Samples</th><th></th></tr></thead><tbody></tbody></table>
   </div>
 </div>
@@ -68,11 +82,10 @@ th{color:#9fb0be}
   <div class="card">
     <h2>System Info</h2>
     <ul style="color:#9fb0be;font-size:13px;line-height:1.7">
-      <li>Detection: <code>face_recognition (HOG)</code> if installed, else Haar cascade — instant fallback</li>
-      <li>Matching: cosine / Euclidean &lt; tolerance → door unlock (simulated)</li>
-      <li>Frame skip + downscale for &lt;100ms latency on CPU</li>
-      <li>Supports multiple RTSP entrances via <code>config.CAMERA_SOURCES</code></li>
-      <li>All data local: <code>data/staff_db.json</code> + <code>data/entry_log.json</code></li>
+      <li><b>Browser mode</b>: uses <code>navigator.mediaDevices.getUserMedia</code> — works on <code>localhost</code> or <code>https</code> (Vercel). Allow camera permission.</li>
+      <li><b>Server mode</b>: <code>cv2.VideoCapture</code> on server — needs webcam/RTSP at <code>config.CAMERA_SOURCES</code></li>
+      <li>Detection: <code>face_recognition</code> if present else OpenCV fallback</li>
+      <li>Matching: cosine/Euclidean &lt; tolerance → door unlock</li>
     </ul>
     <pre id="healthPre" style="background:#0f1215;padding:10px;border-radius:8px;overflow:auto;font-size:12px"></pre>
   </div>
@@ -80,20 +93,119 @@ th{color:#9fb0be}
 
 <script>
 let curEntrance='main_entrance';
+let browserStream=null, browserTimer=null, mode='server';
+const video=document.getElementById('browserVideo'), img=document.getElementById('feed'), overlay=document.getElementById('overlay'), ctx=overlay.getContext('2d'), status=document.getElementById('status');
+
 async function api(p,o){ const r=await fetch(p,o); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 
 async function loadEntrances(){
-  const list=await api('/api/entrances');
-  const sel=document.getElementById('entrance');
-  sel.innerHTML=list.map(e=>`<option>${e}</option>`).join('');
-  curEntrance=list[0]||'main_entrance';
-  sel.value=curEntrance;
-  sel.onchange=()=>{curEntrance=sel.value; reloadFeed();};
-  reloadFeed();
+  try{
+    const list=await api('/api/entrances');
+    const sel=document.getElementById('entrance');
+    sel.innerHTML=list.length ? list.map(e=>`<option>${e}</option>`).join('') : '<option value="">(no server camera)</option>';
+    curEntrance=list[0]||'main_entrance';
+    sel.value=curEntrance;
+    sel.onchange=()=>{curEntrance=sel.value; if(mode==='server') reloadFeed();};
+    if(list.length===0){
+      status.textContent='No server camera configured — click "Use Browser Camera" (recommended).';
+      startBrowserCamera();
+    } else reloadFeed();
+  }catch(e){ status.textContent='Health offline'; }
 }
 function reloadFeed(){
   document.getElementById('entLabel').textContent=curEntrance;
-  document.getElementById('feed').src='/video_feed/'+curEntrance+'?t='+Date.now();
+  img.src='/video_feed/'+curEntrance+'?t='+Date.now();
+  img.onerror=()=> status.textContent='Server feed error — no webcam on server. Use Browser Camera.';
+  img.onload=()=> status.textContent='Server feed active';
+}
+function startServerFeed(){
+  stopBrowser();
+  mode='server'; document.getElementById('modeLabel').textContent='(server)';
+  img.style.display='block'; video.style.display='none';
+  reloadFeed();
+  status.textContent='Switched to server feed';
+}
+async function startBrowserCamera(){
+  try{
+    stopBrowser(false);
+    mode='browser'; document.getElementById('modeLabel').textContent='(browser)';
+    img.style.display='none'; video.style.display='block';
+    status.textContent='Requesting camera permission…';
+    // Must be https or localhost — show clear error otherwise
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      throw new Error('getUserMedia not supported. Use Chrome/Firefox on https or localhost.');
+    }
+    browserStream = await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'}, audio:false});
+    video.srcObject=browserStream;
+    await video.play();
+    status.textContent='Browser camera active — recognizing every 700ms…';
+    // resize overlay to video size
+    overlay.width=video.videoWidth||640; overlay.height=video.videoHeight||480;
+    browserTimer=setInterval(captureAndRecognize, 700);
+  }catch(e){
+    status.textContent='❌ Camera failed: '+e.message+' — check browser permission, https, or use Test Snapshot.';
+    status.style.color='#ff5a5a';
+    console.error(e);
+    alert('Browser camera failed: '+e.message+'\n\nFix: open on https:// or http://localhost, allow permission, and use Chrome. Fallback: use Test Snapshot upload.');
+  }
+}
+function stopBrowser(clearOverlay=true){
+  if(browserTimer){ clearInterval(browserTimer); browserTimer=null; }
+  if(browserStream){ browserStream.getTracks().forEach(t=>t.stop()); browserStream=null; }
+  if(clearOverlay) ctx.clearRect(0,0,overlay.width,overlay.height);
+}
+function stopAll(){
+  stopBrowser();
+  img.src=''; img.style.display='block'; video.style.display='none'; video.srcObject=null;
+  mode='stopped'; document.getElementById('modeLabel').textContent='(stopped)';
+  status.textContent='Stopped.';
+}
+async function captureAndRecognize(){
+  if(!video.srcObject || video.readyState<2) return;
+  const c=document.createElement('canvas');
+  c.width=video.videoWidth; c.height=video.videoHeight;
+  c.getContext('2d').drawImage(video,0,0);
+  const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',0.75));
+  const fd=new FormData(); fd.append('file',blob,'frame.jpg');
+  try{
+    const res=await fetch('/api/recognize',{method:'POST',body:fd});
+    const j=await res.json();
+    drawOverlay(j.faces||[]);
+  }catch(e){ console.error(e); }
+}
+function drawOverlay(faces){
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  if(!faces.length){
+    ctx.fillStyle='rgba(255,90,90,0.9)'; ctx.font='14px sans-serif';
+    ctx.fillText('No face / Unknown', 10,20);
+    return;
+  }
+  faces.forEach(f=>{
+    const [x,y,w,h]=f.box;
+    // scale box to overlay (browser capture may be different size but we use same)
+    const sx=overlay.width / video.videoWidth, sy=overlay.height / video.videoHeight;
+    const rx=x*sx, ry=y*sy, rw=w*sx, rh=h*sy;
+    ctx.strokeStyle=f.granted?'#3dd68c':'#ff5a5a'; ctx.lineWidth=3;
+    ctx.strokeRect(rx,ry,rw,rh);
+    ctx.fillStyle=f.granted?'#3dd68c':'#ff5a5a';
+    const label=`${f.name} ${f.distance.toFixed(2)}`;
+    ctx.fillRect(rx, ry-20, ctx.measureText(label).width+12, 20);
+    ctx.fillStyle='#fff'; ctx.font='12px sans-serif'; ctx.fillText(label, rx+6, ry-6);
+    if(f.granted) document.getElementById('status').textContent='✅ '+f.name+' — GRANTED';
+  });
+}
+async function captureEnroll(){
+  if(!video.srcObject) return alert('Start Browser Camera first');
+  const c=document.createElement('canvas'); c.width=video.videoWidth; c.height=video.videoHeight;
+  c.getContext('2d').drawImage(video,0,0);
+  c.toBlob(async blob=>{
+    const sid=document.getElementById('sid').value.trim()||prompt('Staff ID?')||'EMP'+Date.now()%10000;
+    const name=document.getElementById('sname').value.trim()||prompt('Name?')||sid;
+    const fd=new FormData(); fd.append('staff_id',sid); fd.append('name',name); fd.append('role','staff');
+    fd.append('files',blob,'capture.jpg');
+    const r=await fetch('/api/staff/enroll',{method:'POST',body:fd});
+    if(!r.ok) alert(await r.text()); else { alert('Enrolled '+name); loadStaff(); }
+  },'image/jpeg',0.9);
 }
 async function loadStaff(){
   const rows=await api('/api/staff');
@@ -113,7 +225,6 @@ async function enroll(){
   catch(e){ alert('Enroll failed: '+e.message)}
 }
 async function delStaff(id){ if(!confirm('Delete '+id+'?'))return; await api('/api/staff/'+id,{method:'DELETE'}); loadStaff(); }
-
 async function testSnap(){
   const f=document.getElementById('snap').files[0];
   if(!f) return alert('Pick an image first');
@@ -121,7 +232,6 @@ async function testSnap(){
   const r=await fetch('/api/recognize',{method:'POST',body:fd}); const j=await r.json();
   alert(JSON.stringify(j,null,2));
 }
-
 async function loadLog(){
   const rows=await api('/api/log?n=50');
   document.querySelector('#logTbl tbody').innerHTML=rows.map(r=>`
