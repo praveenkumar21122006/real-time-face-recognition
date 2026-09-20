@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Face Entry System</title>
+<style>
+*{box-sizing:border-box;font-family:Inter,system-ui,Arial}
+body{margin:0;background:#0f1215;color:#e8eef2}
+header{padding:16px 20px;background:#151a1e;border-bottom:1px solid #232a30;display:flex;justify-content:space-between;align-items:center}
+h1{margin:0;font-size:18px;letter-spacing:.5px}
+.badge{padding:4px 8px;border-radius:20px;background:#1e2a24;color:#3dd68c;font-size:12px}
+.grid{display:grid;grid-template-columns:1.6fr .9fr;gap:16px;padding:16px}
+.card{background:#151a1e;border:1px solid #232a30;border-radius:14px;padding:14px}
+.card h2{margin:0 0 10px;font-size:14px;color:#9fb0be;letter-spacing:.6px;text-transform:uppercase}
+#feed{width:100%;height:420px;object-fit:cover;background:#000;border-radius:10px;border:1px solid #232a30}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+select,input,button{padding:9px 11px;border-radius:8px;border:1px solid #2a343d;background:#0f1215;color:#e8eef2}
+button{cursor:pointer;background:#1a73e8;border-color:#1a73e8;font-weight:600}
+button:disabled{opacity:.5}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 6px;border-bottom:1px solid #232a30;text-align:left}
+th{color:#9fb0be}
+.granted{color:#3dd68c} .denied{color:#ff5a5a}
+.thumb{width:28px;height:28px;border-radius:50%;object-fit:cover;background:#222}
+.log{max-height:420px;overflow:auto}
+@media(max-width:900px){.grid{grid-template-columns:1fr} #feed{height:300px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏢 Real-Time Face Recognition — Entry System</h1>
+  <div class="row">
+    <span id="health" class="badge">checking…</span>
+    <select id="entrance"></select>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <h2>Live Camera — <span id="entLabel">main_entrance</span> <span style="color:#6b7c8d;font-weight:400" id="fps"></span></h2>
+    <img id="feed" alt="video feed"/>
+    <div class="row" style="margin-top:10px">
+      <input type="file" id="snap" accept="image/*"/>
+      <button onclick="testSnap()">Test Recognize Snapshot</button>
+      <button onclick="reloadFeed()" style="background:#232a30;border-color:#2a343d">Reload Feed</button>
+    </div>
+    <p style="color:#9fb0be;font-size:12px;margin:8px 0 0">Green = granted, Red = unknown. Auto-logs with 5s cooldown per person. Tolerance configurable in <code>config.py</code>.</p>
+  </div>
+
+  <div class="card">
+    <h2>Enroll Staff (instant credential)</h2>
+    <input id="sid" placeholder="Staff ID e.g. EMP042" style="width:100%;margin-bottom:8px"/>
+    <input id="sname" placeholder="Full name" style="width:100%;margin-bottom:8px"/>
+    <input id="srole" placeholder="Role (staff/admin/security)" value="staff" style="width:100%;margin-bottom:8px"/>
+    <input type="file" id="faces" accept="image/*" multiple style="width:100%;margin-bottom:8px"/>
+    <button onclick="enroll()" style="width:100%">Enroll (1-5 photos)</button>
+    <p style="color:#9fb0be;font-size:12px">Upload 2-3 frontal photos for best accuracy. Enrolled instantly searchable.</p>
+    <table id="staffTbl"><thead><tr><th>ID</th><th>Name</th><th>Samples</th><th></th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<div class="grid" style="padding-top:0">
+  <div class="card log">
+    <h2>Entry Log (real-time)</h2>
+    <table id="logTbl"><thead><tr><th>Time</th><th>Entrance</th><th>Name</th><th>Status</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="card">
+    <h2>System Info</h2>
+    <ul style="color:#9fb0be;font-size:13px;line-height:1.7">
+      <li>Detection: <code>face_recognition (HOG)</code> if installed, else Haar cascade — instant fallback</li>
+      <li>Matching: cosine / Euclidean &lt; tolerance → door unlock (simulated)</li>
+      <li>Frame skip + downscale for &lt;100ms latency on CPU</li>
+      <li>Supports multiple RTSP entrances via <code>config.CAMERA_SOURCES</code></li>
+      <li>All data local: <code>data/staff_db.json</code> + <code>data/entry_log.json</code></li>
+    </ul>
+    <pre id="healthPre" style="background:#0f1215;padding:10px;border-radius:8px;overflow:auto;font-size:12px"></pre>
+  </div>
+</div>
+
+<script>
+let curEntrance='main_entrance';
+async function api(p,o){ const r=await fetch(p,o); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+
+async function loadEntrances(){
+  const list=await api('/api/entrances');
+  const sel=document.getElementById('entrance');
+  sel.innerHTML=list.map(e=>`<option>${e}</option>`).join('');
+  curEntrance=list[0]||'main_entrance';
+  sel.value=curEntrance;
+  sel.onchange=()=>{curEntrance=sel.value; reloadFeed();};
+  reloadFeed();
+}
+function reloadFeed(){
+  document.getElementById('entLabel').textContent=curEntrance;
+  document.getElementById('feed').src='/video_feed/'+curEntrance+'?t='+Date.now();
+}
+async function loadStaff(){
+  const rows=await api('/api/staff');
+  document.querySelector('#staffTbl tbody').innerHTML=rows.map(r=>`
+    <tr><td>${r.id}</td><td>${r.name}<br><small style="color:#9fb0be">${r.role} ${r.active?'':' (disabled)'}</small></td><td>${r.samples}</td>
+    <td><button onclick="delStaff('${r.id}')" style="padding:4px 8px;background:#2a1214;border-color:#5a1f1f">Delete</button></td></tr>`).join('') || '<tr><td colspan=4 style="color:#9fb0be">No staff yet — enroll above</td></tr>';
+}
+async function enroll(){
+  const sid=document.getElementById('sid').value.trim();
+  const name=document.getElementById('sname').value.trim();
+  const role=document.getElementById('srole').value.trim()||'staff';
+  const files=document.getElementById('faces').files;
+  if(!sid||!name||files.length===0) return alert('Fill ID, name and select 1-5 face images');
+  const fd=new FormData(); fd.append('staff_id',sid); fd.append('name',name); fd.append('role',role);
+  for(const f of files) fd.append('files',f);
+  try{ const r=await fetch('/api/staff/enroll',{method:'POST',body:fd}); if(!r.ok) throw new Error(await r.text()); alert('Enrolled '+name); loadStaff(); }
+  catch(e){ alert('Enroll failed: '+e.message)}
+}
+async function delStaff(id){ if(!confirm('Delete '+id+'?'))return; await api('/api/staff/'+id,{method:'DELETE'}); loadStaff(); }
+
+async function testSnap(){
+  const f=document.getElementById('snap').files[0];
+  if(!f) return alert('Pick an image first');
+  const fd=new FormData(); fd.append('file',f);
+  const r=await fetch('/api/recognize',{method:'POST',body:fd}); const j=await r.json();
+  alert(JSON.stringify(j,null,2));
+}
+
+async function loadLog(){
+  const rows=await api('/api/log?n=50');
+  document.querySelector('#logTbl tbody').innerHTML=rows.map(r=>`
+    <tr><td style="white-space:nowrap">${r.timestamp.replace('T',' ')}</td><td>${r.entrance}</td><td>${r.name}<br><small style="color:#9fb0be">${r.staff_id}</small></td><td class="${r.status==='GRANTED'?'granted':'denied'}">${r.status}</td></tr>`).join('') || '<tr><td colspan=4 style="color:#9fb0be">No entries yet</td></tr>';
+}
+async function health(){
+  try{ const h=await api('/health'); document.getElementById('health').textContent = h.has_face_recognition ? 'face_recognition • '+h.staff+' staff' : 'OpenCV fallback • '+h.staff+' staff';
+  document.getElementById('healthPre').textContent=JSON.stringify(h,null,2);}catch(e){document.getElementById('health').textContent='offline'}
+}
+setInterval(loadLog,2000); setInterval(health,5000);
+loadEntrances(); loadStaff(); loadLog(); health();
+</script>
+</body>
+</html>

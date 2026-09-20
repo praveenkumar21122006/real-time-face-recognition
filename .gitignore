@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+data/*.npy
+data/*.json
+data/thumbs/
+.env
+.venv/
+venv/
+.DS_Store
+/tmp/
+data/encodings/*.npy
+data/staff_db.json
+data/entry_log.json
