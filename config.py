@@ -1,8 +1,9 @@
 import os
 
 # Camera sources: 0 = default webcam, or RTSP URL / video file
+# OFF - camera disabled
 CAMERA_SOURCES = {
-    "main_entrance": 0,
+    # "main_entrance": 0,
     # "side_entrance": "rtsp://admin:pass@192.168.1.64/stream",
     # "lobby": "videos/lobby.mp4"
 }
